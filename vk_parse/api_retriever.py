@@ -1,4 +1,4 @@
-from vk_parse.models import Group, Post, User, db_engine
+from vk_parse.models import Group, Post, User, Comment, db_engine
 
 import configparser
 import datetime
@@ -6,7 +6,9 @@ import logging
 import sys
 
 import requests
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import select, func
+from sqlalchemy.orm.exc import NoResultFound, MultipleResultsFound
 
 start_time = datetime.datetime.now()
 config = configparser.ConfigParser()
@@ -22,6 +24,38 @@ logging.basicConfig(
            '%(levelname)-8s %(message)s',
     level=logging.INFO
 )
+
+def get_comments(group_id: str, p_ids: list, rq_limit=4500):
+    """Get comments for a limited amount of posts per day."""
+    req_url = 'https://api.vk.com/method/wall.getComments?v=5.95&'
+    req_url += f'access_token={token}&owner_id=-{group_id}&count=100'
+
+    urls, post_comments = [], []
+    for p_id in p_ids:
+        urls.append(req_url + f'&post_id={p_id}')
+    offset, count = 0, 200
+    for url in urls:
+        while rq_limit > 0 and count > offset:
+            urlo = url + f'&offset={offset}'
+            response = requests.get(urlo).json()
+            count = response['response']['count']
+            response = response['response']['items']
+            for item in response:
+                post_comments.append(Comment(
+                    id=item['id'],
+                    from_id=item['from_id'],
+                    post_id=item['post_id'],
+                    owner_id=group_id,
+                    date=datetime.datetime.fromtimestamp(item['date']),
+                    text=item['text']
+                ))
+            offset += 100
+            rq_limit -= 1
+            print(f'Request limit: {rq_limit}')
+            print(f'Offset: {offset}')
+        session.add_all(post_comments)
+        session.commit()
+    return post_comments
 
 def get_user(user_id):
     """Get and check for existance user's instance."""
@@ -47,7 +81,6 @@ def get_group(group_id):
     group = session.query(Group).filter_by(id=group_id).scalar()
     if group:
         return group
-
     req_url = f'https://api.vk.com/method/groups.getById?v=5.95&' \
               f'access_token={token}&group_id={group_id}&' \
               f'fields=description,is_closed,contacts,members_count,links'
@@ -77,18 +110,17 @@ def get_group(group_id):
     session.commit()
     return group
 
-def main():
-    token = config.get('vk', 'token')
-    owner_id=config.get('vk', 'group_id')
-    req_limit = 4900
+def get_posts(owner_id, req_limit=5000):
     offset = 0
-    min_date=datetime.datetime(2021, 5, 1)
-    pub_date = datetime.datetime.now()
-    group = get_group(owner_id)
-    get_group(67991642)
-    get_group(24199209)
+    try:
+        max_post_id = session.query(func.max(Post.post_id)).filter(
+            Post.owner_id == owner_id
+        ).one()[0]
+    except NoResultFound:
+        max_post_id = 0
+    get_group(owner_id)
     posts = []
-    while pub_date >= min_date and req_limit > 0:
+    while req_limit > 0 and (not posts or posts[-1]['id'] > max_post_id[0]):
         req_group_url = f'https://api.vk.com/method/wall.get?v=5.95&' \
                         f'access_token={token}&owner_id=-{owner_id}&' \
                         f'offset={offset}&count=100'
@@ -98,28 +130,41 @@ def main():
         if not response:
             break
         for post in response:
-            pub_date = datetime.datetime.fromtimestamp(post['date'])
-            posts.append(Post(
-                post_id=post['id'],
-                owner_id=group.id,
-                date=pub_date,
-                marked_as_ads=post['marked_as_ads'],
-                post_type=post['post_type'],
-                text=post['text'],
-                likes_count=post['likes']['count'],
-                repost_count=post['reposts']['count'],
-                views_count=post['views']['count'],
-            ))
+            if post['id'] > max_post_id:
+                pub_date = datetime.datetime.fromtimestamp(post['date'])
+                posts.append(Post(
+                    post_id=post['id'],
+                    owner_id=owner_id,
+                    date=pub_date,
+                    marked_as_ads=post['marked_as_ads'],
+                    post_type=post['post_type'],
+                    text=post['text'],
+                    likes_count=post['likes']['count'],
+                    repost_count=post['reposts']['count'],
+                    views_count=post['views']['count'],
+                ))
         offset += 100
         req_limit -= 1
         print(f'Request limit: {req_limit}')
         print(f'Offset: {offset}')
-        session.bulk_save_objects(posts)
-        session.commit()
-        posts.clear()
-    print('Performing bulk insert')
-    session.bulk_save_objects(posts)
+    session.add_all(posts)
     session.commit()
+    return posts
+
+def main():
+    Comment.__table__.create(db_engine)
+    owner_id=config.get('vk', 'group_id')
+
+    # Get the last existing post id for further retrieve
+    # posts = get_posts(owner_id)
+    # posts = session.query(Post).options(joinedload(Post.group)).limit(50).all()
+    posts = session.query(Post).filter(Post.owner_id==owner_id).all()
+    post_ids = [post.post_id for post in posts]
+    get_comments(owner_id, post_ids)
+    a = 1
+
+    session.close()
+    print('Performing bulk insert')
     print(f'Successfully finished!')
     print(f'Execution time: ', datetime.datetime.now()-start_time)
 

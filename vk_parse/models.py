@@ -96,6 +96,7 @@ class Post(CustomBase):
     likes_count = Column(Integer)
     repost_count = Column(Integer)
     views_count = Column(Integer)
+    comment_count = Column(Integer)
 
     group = relationship('Group')
 
@@ -105,24 +106,25 @@ class Post(CustomBase):
 
 class Comment(CustomBase):
     __intablename__ = 'comments'
+    __table_args__ = (PrimaryKeyConstraint('id', 'owner_id'),)
 
-    id = Column(Integer, autoincrement=True, primary_key=True)
+    id = Column(Integer, autoincrement=True, index=True)
     from_id = Column(
         Integer, ForeignKey('users.id') ,comment='ID of comment author'
     )
-    post_id = Column(Integer)
+    post_id = Column(Integer, ForeignKey('posts.post_id'))
     owner_id = Column(
-        Integer, ForeignKey('groups.id'),
+        Integer, ForeignKey('groups.id'), index=True,
         comment='ID of group feed with the comment'
     )
     date = Column(DateTime, comment='Publication timestamp in MSC tz')
     text = Column(Text)
-
-    ForeignKeyConstraint(
-        ('post_id', 'owner_id'),
-        ['posts.post_id', 'posts.owner_id'],
-        name='fk_post_post_id_constraint'
-    )
+    #
+    # ForeignKeyConstraint(
+    #     ('post_id', 'owner_id'),
+    #     ['posts.post_id', 'posts.owner_id'],
+    #     name='fk_post_post_id_constraint'
+    # )
 
     post = relationship(Post, primaryjoin=post_id==Post.post_id,foreign_keys=Post.post_id)
     author = relationship(User, primaryjoin=from_id==User.id,post_update=True)
