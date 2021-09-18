@@ -164,7 +164,6 @@ def main():
     a = 1
 
     session.close()
-    print('Performing bulk insert')
     print(f'Successfully finished!')
     print(f'Execution time: ', datetime.datetime.now()-start_time)
 
