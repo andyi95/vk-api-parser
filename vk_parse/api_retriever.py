@@ -1,3 +1,5 @@
+import time
+
 from vk_parse.models import Group, Post, User, Comment, db_engine
 
 import configparser
@@ -110,7 +112,7 @@ def get_group(group_id):
     session.commit()
     return group
 
-def get_posts(owner_id, req_limit=5000):
+def get_posts(owner_id, req_limit=4800):
     offset = 0
     try:
         max_post_id = session.query(func.max(Post.post_id)).filter(
@@ -118,21 +120,30 @@ def get_posts(owner_id, req_limit=5000):
         ).one()[0]
     except NoResultFound:
         max_post_id = 0
+    if not max_post_id:
+        max_post_id = 0
     get_group(owner_id)
     posts = []
-    while req_limit > 0 and (not posts or posts[-1]['id'] > max_post_id[0]):
+    while req_limit > 0 and (not posts or posts[-1].post_id > max_post_id):
         req_group_url = f'https://api.vk.com/method/wall.get?v=5.95&' \
                         f'access_token={token}&owner_id=-{owner_id}&' \
                         f'offset={offset}&count=100'
         response_r = requests.get(req_group_url)
         response = response_r.json()
+        if not 'response' in response:
+            print('could not get response')
+            print(response)
+            time.sleep(3)
+            response_r = requests.get(req_group_url)
+            response = response_r.json()
         response = response['response']['items']
-        if not response:
+        if not response or response is None:
             break
         for post in response:
             if post['id'] > max_post_id:
                 pub_date = datetime.datetime.fromtimestamp(post['date'])
-                posts.append(Post(
+                try:
+                    posts.append(Post(
                     post_id=post['id'],
                     owner_id=owner_id,
                     date=pub_date,
@@ -142,26 +153,29 @@ def get_posts(owner_id, req_limit=5000):
                     likes_count=post['likes']['count'],
                     repost_count=post['reposts']['count'],
                     views_count=post['views']['count'],
-                ))
+                    ))
+                except:
+                    break
         offset += 100
         req_limit -= 1
         print(f'Request limit: {req_limit}')
         print(f'Offset: {offset}')
-    session.add_all(posts)
-    session.commit()
+        session.add_all(posts)
+        session.commit()
     return posts
 
 def main():
-    Comment.__table__.create(db_engine)
-    owner_id=config.get('vk', 'group_id')
-
+    # Comment.__table__.create(db_engine)
+    # owner_id=config.get('vk', 'group_id')
+    ids = ['24199209', '67991642', '76982440']
     # Get the last existing post id for further retrieve
-    # posts = get_posts(owner_id)
-    # posts = session.query(Post).options(joinedload(Post.group)).limit(50).all()
-    posts = session.query(Post).filter(Post.owner_id==owner_id).all()
-    post_ids = [post.post_id for post in posts]
-    get_comments(owner_id, post_ids)
-    a = 1
+    for owner_id in ids:
+        posts = get_posts(owner_id)
+        # posts = session.query(Post).options(joinedload(Post.group)).limit(50).all()
+        # posts = session.query(Post).filter(Post.owner_id==owner_id).all()
+        # post_ids = [post.post_id for post in posts]
+        # get_comments(owner_id, post_ids)
+        a = 1
 
     session.close()
     print(f'Successfully finished!')
