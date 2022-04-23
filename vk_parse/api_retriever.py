@@ -1,24 +1,25 @@
-import time
-
-from vk_parse.models import Group, Post, User, Comment, db_engine
-
-import configparser
 import datetime
 import logging
 import sys
+import time
+from typing import List
 
 import requests
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import select, func
-from sqlalchemy.orm.exc import NoResultFound, MultipleResultsFound
+from vk_parse.models import Comment, Group, Post, User, db_engine
+import os
 
+from dotenv import load_dotenv
 start_time = datetime.datetime.now()
-config = configparser.ConfigParser()
-config.read('../config.cfg')
+
+
+load_dotenv()
 
 session = Session(db_engine)
 base_url = 'https://api.vk.com/method/wall.get?v=5.95&'
-token = config.get('vk', 'token')
+token = os.getenv('API_TOKEN')
 
 logging.basicConfig(
     filename='tw_analyse.log',
@@ -26,27 +27,38 @@ logging.basicConfig(
            '%(levelname)-8s %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger()
 
-def get_comments(group_id: str, p_ids: list, rq_limit=4500):
+def get_comments(group_id: str, p_ids: List[Post], rq_limit=4500):
     """Get comments for a limited amount of posts per day."""
     req_url = 'https://api.vk.com/method/wall.getComments?v=5.95&'
     req_url += f'access_token={token}&owner_id=-{group_id}&count=100'
 
     urls, post_comments = [], []
     for p_id in p_ids:
-        urls.append(req_url + f'&post_id={p_id}')
-    offset, count = 0, 200
-    for url in urls:
-        while rq_limit > 0 and count > offset:
+        offset, count = 0, 100
+        while rq_limit > 0 and count > 1:
+            url = req_url + f'&post_id={p_id.post_id}'
             urlo = url + f'&offset={offset}'
             response = requests.get(urlo).json()
+            if 'error' in response.keys():
+                print(f'Error occured fetching API, retrying in 3 seconds')
+                time.sleep(3)
+                response = requests.get(urlo).json()
             count = response['response']['count']
             response = response['response']['items']
+            if not response:
+                break
             for item in response:
+                if session.query(Comment).filter_by(id=item['id']).scalar():
+                    continue
+                author_id = item['from_id'] if item.get('from_id', 0) != 0 else None
+                if author_id:
+                    author = get_user(author_id)
                 post_comments.append(Comment(
                     id=item['id'],
-                    from_id=item['from_id'],
-                    post_id=item['post_id'],
+                    from_id=author_id,
+                    post_id=p_id.id,
                     owner_id=group_id,
                     date=datetime.datetime.fromtimestamp(item['date']),
                     text=item['text']
@@ -57,6 +69,7 @@ def get_comments(group_id: str, p_ids: list, rq_limit=4500):
             print(f'Offset: {offset}')
         session.add_all(post_comments)
         session.commit()
+        post_comments = []
     return post_comments
 
 def get_user(user_id):
@@ -67,15 +80,25 @@ def get_user(user_id):
     req_url = 'https://api.vk.com/method/users.get?v=5.95&'
     req_url += f'access_token={token}&user_ids={user_id}'
     response = requests.get(req_url).json()
-    response = response['response'][0]
+    try:
+        response = response['response'][0]
+    except (KeyError, IndexError):
+        time.sleep(3)
+        response = response.get('response')
+        if not response or not isinstance(response, list):
+            response = {'id': user_id}
+        else:
+            response = response[0]
     user = User(
         id=response['id'],
-        first_name=response['first_name'],
-        last_name=response['last_name'],
-        deactivated=response['deactivated'],
-        is_closed=response['is_closed'],
-        about=response['about']
+        first_name=response.get('first_name', ''),
+        last_name=response.get('last_name', ''),
+        deactivated=True if response.get('deactivated', False) else False,
+        is_closed=True if response.get('is_closed', False) else False,
+        about=response.get('about', '')
     )
+    session.add(user)
+    session.commit()
     return user
 
 def get_group(group_id):
@@ -160,22 +183,24 @@ def get_posts(owner_id, req_limit=4800):
         req_limit -= 1
         print(f'Request limit: {req_limit}')
         print(f'Offset: {offset}')
-        session.add_all(posts)
-        session.commit()
+        try:
+            session.add_all(posts)
+            session.commit()
+        except IntegrityError as e:
+            logger.warning(e.detail)
     return posts
 
 def main():
     # Comment.__table__.create(db_engine)
-    # owner_id=config.get('vk', 'group_id')
-    ids = ['24199209', '67991642', '76982440']
+    ids = os.getenv('GROUP_IDS').split(',')
     # Get the last existing post id for further retrieve
     for owner_id in ids:
         posts = get_posts(owner_id)
-        # posts = session.query(Post).options(joinedload(Post.group)).limit(50).all()
-        # posts = session.query(Post).filter(Post.owner_id==owner_id).all()
-        # post_ids = [post.post_id for post in posts]
-        # get_comments(owner_id, post_ids)
-        a = 1
+        # posts = session.query(Post).filter(
+        #     Post.owner_id == owner_id
+        # ).all()
+        post_ids = [post.post_id for post in posts]
+        get_comments(owner_id, posts)
 
     session.close()
     print(f'Successfully finished!')

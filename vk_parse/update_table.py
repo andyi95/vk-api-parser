@@ -1,15 +1,14 @@
-from vk_parse.models import Group, Post, User, Comment, db_engine, config
-from vk_parse.api_retriever import session
-
-
 import configparser
 import datetime
 import logging
 import sys
 
 import requests
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from vk_parse.api_retriever import session
+from vk_parse.models import Comment, Group, Post, User, config, db_engine
+
 
 def main():
     token = config.get('vk', 'token')
